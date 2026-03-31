@@ -3,52 +3,75 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/jroimartin/gocui"
 
 	"github.com/merzzzl/warp/internal/service"
 	"github.com/merzzzl/warp/internal/utils/log"
-	"github.com/merzzzl/warp/internal/utils/network"
 )
 
-type LogWriter struct {
+const sidebarWidth = 22
+
+type logWriter struct {
 	logs chan string
 }
 
-// Write interface for writing to a log.
-func (l *LogWriter) Write(p []byte) (n int, err error) {
-	l.logs <- string(p)
+func (l *logWriter) Write(p []byte) (n int, err error) {
+	select {
+	case l.logs <- string(p):
+	default:
+	}
 
 	return len(p), nil
 }
 
-// CreateTUI creates a TUI for the given service.
-func CreateTUI(routes *service.Routes, traffic *service.Traffic, useFun bool) error {
-	l := &LogWriter{logs: make(chan string, 100)}
+func CreateTUI(routes *service.Routes, traffic *service.Traffic) error {
+	lw := &logWriter{logs: make(chan string, 256)}
 
-	log.SetOutput(l)
+	log.Setup(lw, slog.LevelInfo)
 
 	g, err := gocui.NewGui(gocui.Output256)
 	if err != nil {
 		return err
 	}
 
-	if useFun {
-		go fun(g)
-	} else {
-		g.FgColor = gocui.Attribute(232)
-	}
+	done := make(chan struct{})
 
-	g.BgColor = gocui.Attribute(235)
+	defer func() {
+		close(done)
+		g.Close()
+	}()
 
-	defer g.Close()
+	g.BgColor = gocui.ColorDefault
+	g.FgColor = gocui.ColorDefault
+
+	go animateBanner(g, done)
 
 	g.SetManagerFunc(func(g *gocui.Gui) error {
-		return layout(g, routes, traffic, l.logs)
+		maxX, maxY := g.Size()
+
+		if err := setupBanner(g, maxX); err != nil {
+			return err
+		}
+		if err := setupUptime(g, done, maxX); err != nil {
+			return err
+		}
+		if err := setupLogs(g, lw.logs, done, maxX, maxY); err != nil {
+			return err
+		}
+		if err := setupPipes(g, done, maxX, maxY); err != nil {
+			return err
+		}
+		if err := setupStats(g, traffic, done, maxX, maxY); err != nil {
+			return err
+		}
+		if err := setupIPs(g, routes, done, maxX, maxY); err != nil {
+			return err
+		}
+		return nil
 	})
 
 	if err := g.SetKeybinding("", gocui.KeyCtrlC, gocui.ModNone, func(*gocui.Gui, *gocui.View) error {
@@ -64,260 +87,50 @@ func CreateTUI(routes *service.Routes, traffic *service.Traffic, useFun bool) er
 	return nil
 }
 
-func layout(g *gocui.Gui, routes *service.Routes, traffic *service.Traffic, logs <-chan string) error {
-	maxX, maxY := g.Size()
-
-	if v, err := g.SetView("logs", 0, 0, maxX-21, maxY-16); err != nil {
-		if !errors.Is(err, gocui.ErrUnknownView) {
-			return err
-		}
-
-		v.Title = "Logs"
-
-		go func() {
-			for logMsg := range logs {
-				g.Update(func(*gocui.Gui) error {
-					fmt.Fprint(v, logMsg)
-
-					lines := len(v.BufferLines()) - 1
-					_, vy := v.Size()
-
-					if lines > vy {
-						ox, _ := v.Origin()
-
-						if err := v.SetOrigin(ox, lines-vy); err != nil {
-							return err
-						}
-					}
-
-					return nil
-				})
-			}
-		}()
-	}
-
-	if v, err := g.SetView("pipes", 0, maxY-15, maxX-21, maxY-1); err != nil {
-		if !errors.Is(err, gocui.ErrUnknownView) {
-			return err
-		}
-
-		v.Title = "Pipes"
-
-		go func() {
-			for range time.NewTicker(time.Millisecond * 250).C {
-				g.Update(func(*gocui.Gui) error {
-					v.Clear()
-
-					list := network.List()
-
-					sort.Slice(list, func(i, j int) bool {
-						return list[i].OpenCount > list[j].OpenCount
-					})
-
-					for _, pipe := range list {
-						fmt.Fprintf(v, "%s %s %s %s %s %s %s %s\n",
-							log.Colorize(time.Unix(0, 0).UTC().Add(time.Since(pipe.OpenAt)).Format("15:04:05"), 7),
-							fmt.Sprintf("%.3d", pipe.OpenCount),
-							log.Colorize(strings.Repeat("»", 3), 6),
-							log.Colorize(strings.ToUpper(pipe.Tag), 11),
-							log.Colorize(strings.Repeat("»", 3), 6),
-							log.Colorize(strings.ToUpper(pipe.Dest.Network()), 11),
-							pipe.Dest.String(),
-							log.Colorize(pipe.Protocol, 6),
-						)
-					}
-
-					return nil
-				})
-			}
-		}()
-	}
-
-	if v, err := g.SetView("stats", maxX-20, 0, maxX-1, 5); err != nil {
-		if !errors.Is(err, gocui.ErrUnknownView) {
-			return err
-		}
-
-		v.Title = "Bandwidth"
-
-		go func() {
-			for range time.NewTicker(time.Millisecond * 100).C {
-				g.Update(func(*gocui.Gui) error {
-					v.Clear()
-
-					in, out := traffic.GetRates()
-					sin, sout := traffic.GetTransferred()
-
-					fmt.Fprintf(v, "In:  %s/s\n", byteToSI(in))
-					fmt.Fprintf(v, "     %s\n", log.Colorize(byteToSI(sin), 7))
-					fmt.Fprintf(v, "Out: %s/s\n", byteToSI(out))
-					fmt.Fprintf(v, "     %s\n", log.Colorize(byteToSI(sout), 7))
-
-					return nil
-				})
-			}
-		}()
-	}
-
-	if v, err := g.SetView("ips", maxX-20, 6, maxX-1, maxY-4); err != nil {
-		if !errors.Is(err, gocui.ErrUnknownView) {
-			return err
-		}
-
-		v.Title = "IP List"
-
-		go func() {
-			for range time.NewTicker(time.Second * 1).C {
-				g.Update(func(*gocui.Gui) error {
-					v.Clear()
-
-					ips := routes.GetAll()
-					sort.Strings(ips)
-
-					for _, ip := range ips {
-						fmt.Fprintln(v, ip)
-					}
-
-					return nil
-				})
-			}
-		}()
-	}
-
-	if v, err := g.SetView("uptime", maxX-20, maxY-3, maxX-1, maxY-1); err != nil {
-		if !errors.Is(err, gocui.ErrUnknownView) {
-			return err
-		}
-
-		v.Title = "Uptime"
-
-		start := time.Now()
-		loader := []rune("        ")
-		transf := 0.0
-		prevTotal := 0.0
-		bar := func() string {
-			rx, tx := traffic.GetTransferred()
-			total := rx + tx
-			transf = total - prevTotal
-			prevTotal = total
-
-			var newChar rune
-			switch {
-			case transf < 1:
-				newChar = ' '
-			case transf < 1024:
-				if loader[7] == '⢀' {
-					newChar = '⡀'
-				} else {
-					newChar = '⢀'
-				}
-			case transf < 1024*32:
-				newChar = '⣀'
-			case transf < 1024*64:
-				if loader[7] == '⣠' {
-					newChar = '⣄'
-				} else {
-					newChar = '⣠'
-				}
-			case transf < 1024*128:
-				newChar = '⣤'
-			case transf < 1024*256:
-				if loader[7] == '⣴' {
-					newChar = '⣦'
-				} else {
-					newChar = '⣴'
-				}
-			case transf < 1024*512:
-				newChar = '⣶'
-			case transf < 1024*1024:
-				if loader[7] == '⣾' {
-					newChar = '⣷'
-				} else {
-					newChar = '⣾'
-				}
-			default:
-				newChar = '⣿'
-			}
-
-			// Сдвигаем символы влево и добавляем новый в конец
-			loader = append(loader[1:], newChar)
-			return string(loader)
-		}
-
-		go func() {
-			for range time.NewTicker(time.Millisecond * 1000).C {
-				g.Update(func(*gocui.Gui) error {
-					v.Clear()
-
-					up := time.Unix(0, 0).UTC().Add(time.Since(start)).Format("15:04:05")
-
-					fmt.Fprintf(v, "%8s %9s", bar(), up)
-
-					return nil
-				})
-			}
-		}()
-	}
-
-	return nil
+func isNewView(err error) bool {
+	return errors.Is(err, gocui.ErrUnknownView)
 }
 
-func fColor() func() int {
-	currentColor := 51
-	color := func() int {
-		if currentColor == 231 {
-			currentColor = 51
-		}
-
-		currentColor++
-
-		return currentColor
-	}
-
-	return color
+func colorize(s string, c int) string {
+	return fmt.Sprintf("\033[38;5;%dm%s\033[0m", c, s)
 }
 
-func fArt() string {
-	ts := []string{
-		"⊂(◉‿◉)つ──",
-		"( ✜︵ ✜ )─",
-		"ʕっ •ᴥ•ʔっ─",
-		"(｡◕‿‿◕｡)─",
+func randomArt() string {
+	arts := []string{
+		"⊂(◉‿◉)つ",
+		"( ✜︵ ✜ )",
+		"ʕっ •ᴥ•ʔっ",
+		"(｡◕‿‿◕｡)",
 		"(っ ´ω`c)♡",
-		"(ʘ‿ʘ)╯────",
+		"(ʘ‿ʘ)╯",
 	}
-	art := ts[rand.Intn(6)]
 
-	return fmt.Sprintf("─%s─", art)
+	return arts[rand.Intn(len(arts))]
 }
 
-func fun(g *gocui.Gui) {
-	cl := fColor()
+func animateBanner(g *gocui.Gui, done <-chan struct{}) {
+	cl := 51
 
-	v, err := g.SetView("fun", 0, -1, 11, 1)
-	if !errors.Is(err, gocui.ErrUnknownView) {
-		return
-	}
+	ticker := time.NewTicker(75 * time.Millisecond)
+	defer ticker.Stop()
 
-	v.Frame = false
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			cl++
+			if cl > 231 {
+				cl = 52
+			}
 
-	_, _ = fmt.Fprint(v, fArt())
+			g.Update(func(*gocui.Gui) error {
+				if v, err := g.View("banner"); err == nil {
+					v.FgColor = gocui.Attribute(cl)
+				}
 
-	for range time.NewTicker(time.Millisecond * 75).C {
-		fgc := cl() + 1
-
-		g.FgColor = gocui.Attribute(fgc)
-
-		if _, err := g.View("fun"); err == nil {
-			v.FgColor = gocui.Attribute(fgc)
-		}
-
-		if v, err := g.View("ips"); err == nil {
-			v.FgColor = gocui.Attribute(fgc)
-		}
-
-		if v, err := g.View("uptime"); err == nil {
-			v.FgColor = gocui.Attribute(fgc)
+				return nil
+			})
 		}
 	}
 }

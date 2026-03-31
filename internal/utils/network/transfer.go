@@ -2,18 +2,15 @@ package network
 
 import (
 	"errors"
-	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/merzzzl/warp/internal/utils/log"
 )
 
 type Pipe struct {
-	tag      string
 	protocol atomic.Uint32
 	addr1    net.Addr
 	addr2    net.Addr
@@ -30,12 +27,12 @@ type PipeGroup struct {
 
 var openPipes = sync.Map{}
 
-func Transfer(tag string, conn1, conn2 net.Conn) {
+func Transfer(conn1, conn2 net.Conn) {
 	var wg sync.WaitGroup
 
 	wg.Add(2)
 
-	pipe, end := open(tag, conn1.LocalAddr(), conn1.RemoteAddr())
+	pipe, end := open(conn1.LocalAddr(), conn1.RemoteAddr())
 	defer end()
 
 	go func() {
@@ -44,7 +41,7 @@ func Transfer(tag string, conn1, conn2 net.Conn) {
 		err := universalCopy(&pipe.protocol, conn1, conn2)
 		if err != nil {
 			if _, ok := err.(net.Error); !ok {
-				log.Warn().Err(err).Msg(tag, "failed to read data")
+				slog.Warn("failed to read data", "error", err)
 			}
 		}
 		_ = conn2.Close()
@@ -56,7 +53,7 @@ func Transfer(tag string, conn1, conn2 net.Conn) {
 		err := universalCopy(nil, conn2, conn1)
 		if err != nil {
 			if _, ok := err.(net.Error); !ok {
-				log.Warn().Err(err).Msg(tag, "failed to write data")
+				slog.Warn("failed to write data", "error", err)
 			}
 		}
 		_ = conn1.Close()
@@ -65,9 +62,8 @@ func Transfer(tag string, conn1, conn2 net.Conn) {
 	wg.Wait()
 }
 
-func open(tag string, addr1, addr2 net.Addr) (*Pipe, func()) {
+func open(addr1, addr2 net.Addr) (*Pipe, func()) {
 	p := Pipe{
-		tag:    tag,
 		addr1:  addr1,
 		addr2:  addr2,
 		openAt: time.Now(),
@@ -89,13 +85,12 @@ func List() []*PipeGroup {
 			return true
 		}
 
-		key := fmt.Sprintf("%s:%s", p.addr1.String(), p.tag)
+		key := p.addr1.String()
 		pgr := &PipeGroup{}
 
 		if v, ok := list[key]; ok {
 			pgr = v
 		} else {
-			pgr.Tag = p.tag
 			pgr.Dest = p.addr1
 			pgr.OpenCount = 1
 			pgr.Protocol = protocols[p.protocol.Load()]

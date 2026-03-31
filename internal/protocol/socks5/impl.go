@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"strconv"
 	"sync"
@@ -51,7 +52,7 @@ func New(cfg *Config) (*Protocol, error) {
 		return nil, err
 	}
 
-	log.Debug().Str("url", fmt.Sprintf("%s", cfg.Host)).Msg("SOC", "open connection")
+	slog.Debug("open connection", "url", fmt.Sprintf("%s", cfg.Host))
 
 	return &Protocol{
 		host:    cfg.Host,
@@ -65,7 +66,7 @@ func New(cfg *Config) (*Protocol, error) {
 
 func (p *Protocol) dial(n, addr string) (net.Conn, error) {
 	for i := 0; ; i++ {
-		log.Debug().Str("attempt", strconv.Itoa(i)).Str("dest", addr).Str("type", n).Msg("SOC", "open dial")
+		slog.Debug("open dial", "attempt", strconv.Itoa(i), "dest", addr, "type", n)
 
 		conn, err := p.dialer.Dial(n, addr)
 		if err == nil || i == 2 {
@@ -76,7 +77,7 @@ func (p *Protocol) dial(n, addr string) (net.Conn, error) {
 			return nil, err
 		}
 
-		log.Warn().Str("dest", addr).Str("type", n).Str("url", fmt.Sprintf("%s", p.host)).Err(err).Msg("SOC", "reopen connection")
+		slog.Warn("reopen connection", "dest", addr, "type", n, "url", fmt.Sprintf("%s", p.host), "error", err)
 
 		if !p.mx.TryLock() {
 			time.Sleep(1 * time.Second)
@@ -86,7 +87,7 @@ func (p *Protocol) dial(n, addr string) (net.Conn, error) {
 
 		dialer, err := proxy.SOCKS5("tcp", p.host, p.auth, proxy.Direct)
 		if err != nil {
-			log.Error().Err(err).Msg("SOC", "failed to open socks5 tunnel")
+			slog.Error("failed to open socks5 tunnel", "error", err)
 
 			p.mx.Unlock()
 
@@ -113,7 +114,7 @@ func (p *Protocol) LookupHost(_ context.Context, req *dns.Msg) *dns.Msg {
 	for _, addr := range p.dns {
 		dnsConn, err := p.dial("tcp", addr+":53")
 		if err != nil {
-			log.Error().Str("server", addr).DNS(req).Err(err).Msg("SOC", "handle dns req")
+			slog.Error("handle dns req", append([]any{"server", addr, "error", err}, log.DNSAttrs(req)...)...)
 
 			continue
 		}
@@ -123,19 +124,19 @@ func (p *Protocol) LookupHost(_ context.Context, req *dns.Msg) *dns.Msg {
 
 		err = co.WriteMsg(req)
 		if err != nil {
-			log.Error().Str("server", addr).DNS(req).Err(err).Msg("SOC", "write dns req")
+			slog.Error("write dns req", append([]any{"server", addr, "error", err}, log.DNSAttrs(req)...)...)
 
 			continue
 		}
 
 		rsp, err := co.ReadMsg()
 		if err != nil {
-			log.Error().Str("server", addr).DNS(req).Err(err).Msg("SOC", "read dns req")
+			slog.Error("read dns req", append([]any{"server", addr, "error", err}, log.DNSAttrs(req)...)...)
 
 			continue
 		}
 
-		log.Debug().Str("server", addr).DNS(req).Msg("SOC", "handle dns req")
+		slog.Debug("handle dns req", append([]any{"server", addr}, log.DNSAttrs(req)...)...)
 
 		if len(rsp.Answer) == 0 {
 			continue
@@ -151,13 +152,13 @@ func (p *Protocol) HandleTCP(conn net.Conn) {
 	remoteConn, err := p.dial(conn.LocalAddr().Network(), conn.LocalAddr().String())
 	if err != nil {
 		if !errors.Is(err, io.EOF) {
-			log.Warn().Str("dest", conn.LocalAddr().String()).Str("type", conn.LocalAddr().Network()).Err(err).Msg("SSH", "handle conn")
+			slog.Warn("handle conn", "dest", conn.LocalAddr().String(), "type", conn.LocalAddr().Network(), "error", err)
 		}
 
 		return
 	}
 
-	log.Info().Str("dest", conn.LocalAddr().String()).Str("type", conn.LocalAddr().Network()).Msg("SOC", "handle conn")
+	slog.Info("handle conn", "dest", conn.LocalAddr().String(), "type", conn.LocalAddr().Network())
 
-	network.Transfer("SOC", conn, remoteConn)
+	network.Transfer(conn, remoteConn)
 }

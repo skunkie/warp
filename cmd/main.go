@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -20,7 +21,8 @@ func main() {
 
 	cfg, err := loadConfig()
 	if err != nil {
-		log.Fatal().Err(err).Msg("APP", "failed on load config")
+		slog.Error("failed on load config", "error", err)
+		os.Exit(1)
 	}
 
 	if cfg.debug {
@@ -29,15 +31,16 @@ func main() {
 
 	srv, err := service.New(cfg.Tunnel)
 	if err != nil {
-		log.Fatal().Err(err).Msg("APP", "failed create tunnel")
+		slog.Error("failed create tunnel", "error", err)
+		os.Exit(1)
 	}
 
 	if !cfg.verbose {
 		go func() {
 			defer cancel()
 
-			if err := tui.CreateTUI(srv.GetRoutes(), srv.GetTraffic(), cfg.fun); err != nil {
-				log.Error().Err(err).Msg("APP", "failed on create tui")
+			if err := tui.CreateTUI(srv.GetRoutes(), srv.GetTraffic()); err != nil {
+				slog.Error("failed on create tui", "error", err)
 			}
 		}()
 	} else {
@@ -73,7 +76,8 @@ func main() {
 		if pConfig.SSH != nil {
 			sshR, err := ssh.New(pConfig.SSH)
 			if err != nil {
-				log.Fatal().Err(err).Msg("APP", "failed to create SSH route")
+				slog.Error("failed to create SSH route", "error", err)
+				os.Exit(1)
 			}
 
 			group = append(group, sshR)
@@ -85,7 +89,8 @@ func main() {
 		if pConfig.WireGuard != nil {
 			cbR, err := wg.New(ctx, pConfig.WireGuard)
 			if err != nil {
-				log.Fatal().Err(err).Msg("APP", "failed to create WireGuard route")
+				slog.Error("failed to create WireGuard route", "error", err)
+				os.Exit(1)
 			}
 
 			group = append(group, cbR)
@@ -97,7 +102,8 @@ func main() {
 		if pConfig.SOCKS5 != nil {
 			socks5R, err := socks5.New(pConfig.SOCKS5)
 			if err != nil {
-				log.Fatal().Err(err).Msg("APP", "failed to create SOCKS5 route")
+				slog.Error("failed to create SOCKS5 route", "error", err)
+				os.Exit(1)
 			}
 			group = append(group, socks5R)
 
@@ -106,6 +112,7 @@ func main() {
 	}
 
 	if err := srv.ListenAndServe(ctx, group, cfg.ipv6); err != nil {
-		log.Fatal().Err(err).Msg("APP", "failed to run service")
+		slog.Error("failed to run service", "error", err)
+		os.Exit(1)
 	}
 }

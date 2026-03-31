@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/user"
 	"reflect"
-	"strings"
 
 	"gopkg.in/yaml.v2"
 
@@ -30,7 +29,6 @@ type Config struct {
 	ipv6      bool             `yaml:"ipv6"`
 	verbose   bool
 	debug     bool
-	fun       bool
 }
 
 func loadConfig() (*Config, error) {
@@ -45,7 +43,6 @@ func loadConfig() (*Config, error) {
 
 	flag.BoolVar(&cfg.verbose, "verbose", false, "enable verbose logging (default: disabled)")
 	flag.BoolVar(&cfg.debug, "debug", false, "enable debug logging (default: disabled)")
-	flag.BoolVar(&cfg.fun, "fun", false, "magic!")
 	flag.Parse()
 
 	file, err := os.ReadFile(usr.HomeDir + "/" + ".warp.yaml")
@@ -59,16 +56,6 @@ func loadConfig() (*Config, error) {
 
 	if !cfg.validate() {
 		return nil, errInvalidConfig
-	}
-
-	for _, pConfig := range cfg.Protocols {
-		if pConfig.SSH != nil {
-			if strings.Contains(pConfig.SSH.User, "radik") {
-				cfg.fun = !cfg.fun
-
-				break
-			}
-		}
 	}
 
 	return &cfg, nil

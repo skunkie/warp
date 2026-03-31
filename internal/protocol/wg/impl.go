@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/netip"
 	"strconv"
@@ -48,12 +49,12 @@ func New(ctx context.Context, cfg *Config) (*Protocol, error) {
 
 	privateKey, err := encodeBase64ToHex(cfg.PrivateKey)
 	if err != nil {
-		log.Error().Err(err).Msg("WRG", "invalid private key")
+		slog.Error("invalid private key", "error", err)
 	}
 
 	peerPublicKey, err := encodeBase64ToHex(cfg.PeerPublicKey)
 	if err != nil {
-		log.Error().Err(err).Msg("WRG", "invalid peer public key")
+		slog.Error("invalid peer public key", "error", err)
 	}
 
 	_, err = request.WriteString(fmt.Sprintf(
@@ -87,7 +88,7 @@ func New(ctx context.Context, cfg *Config) (*Protocol, error) {
 		dnss = append(dnss, addr)
 	}
 
-	log.Debug().Str("ip", localAddress.String()).Str("mtu", strconv.Itoa(defaultMTU)).Msg("WRG", "create tun")
+	slog.Debug("create tun", "ip", localAddress.String(), "mtu", strconv.Itoa(defaultMTU))
 
 	tun, tnet, err := netstack.CreateNetTUN([]netip.Addr{localAddress}, dnss, defaultMTU)
 	if err != nil {
@@ -96,14 +97,14 @@ func New(ctx context.Context, cfg *Config) (*Protocol, error) {
 
 	wglog := device.Logger{
 		Verbosef: func(format string, args ...any) {
-			log.Debug().Msgf("WRG", format, args...)
+			slog.Debug(fmt.Sprintf(format, args...))
 		},
 		Errorf: func(format string, args ...any) {
-			log.Error().Msgf("WRG", format, args...)
+			slog.Error(fmt.Sprintf(format, args...))
 		},
 	}
 
-	log.Debug().Str("ip", localAddress.String()).Str("mtu", strconv.Itoa(defaultMTU)).Msg("WRG", "create device")
+	slog.Debug("create device", "ip", localAddress.String(), "mtu", strconv.Itoa(defaultMTU))
 
 	dev := device.NewDevice(tun, wgconn.NewDefaultBind(), &wglog)
 
@@ -112,7 +113,7 @@ func New(ctx context.Context, cfg *Config) (*Protocol, error) {
 		return nil, err
 	}
 
-	log.Debug().Str("ip", localAddress.String()).Str("mtu", strconv.Itoa(defaultMTU)).Msg("WRG", "up device")
+	slog.Debug("up device", "ip", localAddress.String(), "mtu", strconv.Itoa(defaultMTU))
 
 	err = dev.Up()
 	if err != nil {
@@ -158,7 +159,7 @@ func (p *Protocol) LookupHost(ctx context.Context, req *dns.Msg) *dns.Msg {
 	for _, addr := range p.dns {
 		dial, err := p.tnet.DialContext(ctx, "udp", addr+":53")
 		if err != nil {
-			log.Error().Err(err).DNS(req).Msg("WRG", "failed to handle dns req")
+			slog.Error("failed to handle dns req", append([]any{"error", err}, log.DNSAttrs(req)...)...)
 
 			continue
 		}
@@ -168,19 +169,19 @@ func (p *Protocol) LookupHost(ctx context.Context, req *dns.Msg) *dns.Msg {
 
 		err = co.WriteMsg(req)
 		if err != nil {
-			log.Error().Err(err).DNS(req).Msg("WRG", "failed to handle dns req")
+			slog.Error("failed to handle dns req", append([]any{"error", err}, log.DNSAttrs(req)...)...)
 
 			continue
 		}
 
 		rsp, err := co.ReadMsg()
 		if err != nil {
-			log.Error().Err(err).DNS(req).Msg("WRG", "failed to handle dns req")
+			slog.Error("failed to handle dns req", append([]any{"error", err}, log.DNSAttrs(req)...)...)
 
 			continue
 		}
 
-		log.Debug().Str("server", addr).DNS(req).Msg("WRG", "handle dns req")
+		slog.Debug("handle dns req", append([]any{"server", addr}, log.DNSAttrs(req)...)...)
 
 		if len(rsp.Answer) == 0 {
 			continue
@@ -196,28 +197,28 @@ func (p *Protocol) HandleTCP(conn net.Conn) {
 	remoteConn, err := p.tnet.Dial(conn.LocalAddr().Network(), conn.LocalAddr().String())
 	if err != nil {
 		if !errors.Is(err, io.EOF) {
-			log.Warn().Str("dest", conn.LocalAddr().String()).Str("type", conn.LocalAddr().Network()).Err(err).Msg("SSH", "handle conn")
+			slog.Warn("handle conn", "dest", conn.LocalAddr().String(), "type", conn.LocalAddr().Network(), "error", err)
 		}
 
 		return
 	}
 
-	log.Info().Str("dest", conn.LocalAddr().String()).Str("type", conn.LocalAddr().Network()).Msg("WRG", "handle conn")
+	slog.Info("handle conn", "dest", conn.LocalAddr().String(), "type", conn.LocalAddr().Network())
 
-	network.Transfer("WRG", conn, remoteConn)
+	network.Transfer(conn, remoteConn)
 }
 
 func (p *Protocol) HandleUDP(conn net.Conn) {
 	remoteConn, err := p.tnet.Dial(conn.LocalAddr().Network(), conn.LocalAddr().String())
 	if err != nil {
 		if !errors.Is(err, io.EOF) {
-			log.Warn().Str("dest", conn.LocalAddr().String()).Str("type", conn.LocalAddr().Network()).Err(err).Msg("SSH", "handle conn")
+			slog.Warn("handle conn", "dest", conn.LocalAddr().String(), "type", conn.LocalAddr().Network(), "error", err)
 		}
 
 		return
 	}
 
-	log.Info().Str("dest", conn.LocalAddr().String()).Str("type", conn.LocalAddr().Network()).Msg("WRG", "handle conn")
+	slog.Info("handle conn", "dest", conn.LocalAddr().String(), "type", conn.LocalAddr().Network())
 
-	network.Transfer("WRG", conn, remoteConn)
+	network.Transfer(conn, remoteConn)
 }

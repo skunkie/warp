@@ -1,72 +1,29 @@
 package log
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/miekg/dns"
-	"github.com/rs/zerolog"
-	zlog "github.com/rs/zerolog/log"
 )
 
-var (
-	l     = setLoggerOutput(os.Stdout)
-	level = zerolog.InfoLevel
-)
-
-type Event struct {
-	e *zerolog.Event
+func Setup(out io.Writer, level slog.Level) {
+	slog.SetDefault(slog.New(&colorHandler{out: out, level: level}))
 }
 
-// Debug logs a message at info level.
-func Debug() *Event {
-	return &Event{l.Debug()}
+func EnableDebug() {
+	Setup(os.Stdout, slog.LevelDebug)
 }
 
-// Info logs a message at info level.
-func Info() *Event {
-	return &Event{l.Info()}
+func Colorize(s string, c int) string {
+	return fmt.Sprintf("\033[38;5;%dm%s\033[0m", c, s)
 }
 
-// Info logs a message at info level.
-func Warn() *Event {
-	return &Event{l.Warn()}
-}
-
-// Error logs a message at error level.
-func Error() *Event {
-	return &Event{l.Error()}
-}
-
-// Fatal logs a message at fatal level.
-func Fatal() *Event {
-	return &Event{l.Fatal()}
-}
-
-// Str logs a string with the given key and value.
-func (e *Event) Str(key, val string) *Event {
-	return &Event{e.e.Str(key, val)}
-}
-
-// Err logs an error.
-func (e *Event) Err(err error) *Event {
-	return &Event{e.e.Err(err)}
-}
-
-// Msg logs a message with the given tag and message.
-func (e *Event) Msg(tag, msg string) {
-	if e == nil {
-		return
-	}
-
-	e.e.Msg(Colorize(tag, 14) + " " + msg)
-}
-
-// DNS logs a DNS message.
-func (e *Event) DNS(m *dns.Msg) *Event {
+func DNSAttrs(m *dns.Msg) []any {
 	names := make([]string, 0, len(m.Question))
 	ips := make([]string, 0, len(m.Answer))
 
@@ -83,117 +40,85 @@ func (e *Event) DNS(m *dns.Msg) *Event {
 		ips = append(ips, ansA.A.String())
 	}
 
-	e = e.Str("names", strings.Join(names, ","))
+	attrs := []any{"names", strings.Join(names, ",")}
 
 	if len(ips) != 0 {
-		e = e.Str("ips", strings.Join(ips, ","))
+		attrs = append(attrs, "ips", strings.Join(ips, ","))
 	}
 
-	return e
+	return attrs
 }
 
-// Msgf logs a message with the given tag and format string.
-func (e *Event) Msgf(tag, format string, v ...any) {
-	if e == nil {
-		return
-	}
-
-	e.Msg(tag, fmt.Sprintf(format, v...))
+type colorHandler struct {
+	out   io.Writer
+	level slog.Level
+	attrs []slog.Attr
 }
 
-// SetOutput sets the output for logging messages.
-func SetOutput(out io.Writer) {
-	l = setLoggerOutput(out)
+func (h *colorHandler) Enabled(_ context.Context, l slog.Level) bool {
+	return l >= h.level
 }
 
-func EnableDebug() {
-	level = zerolog.DebugLevel
+func (h *colorHandler) Handle(_ context.Context, r slog.Record) error {
+	ts := Colorize(r.Time.Format("15:04:05"), 7)
+	lvl := formatLevel(r.Level)
+	msg := r.Message
 
-	SetOutput(os.Stdout)
-}
+	var fields []string
+	var errStr string
 
-func setLoggerOutput(out io.Writer) zerolog.Logger {
-	return zlog.Output(zerolog.ConsoleWriter{
-		Out: out,
-		FormatFieldName: func(i any) string {
-			str, ok := i.(string)
-			if !ok {
-				return ""
-			}
-
-			return Colorize(str+"=", 6)
-		},
-		FormatFieldValue: func(i any) string {
-			str, ok := i.(string)
-			if !ok {
-				return ""
-			}
-
-			return Colorize(str, 6)
-		},
-		FormatErrFieldName: func(any) string {
-			return ""
-		},
-		FormatErrFieldValue: func(i any) string {
-			str, ok := i.(string)
-			if !ok {
-				return ""
-			}
-
-			return Colorize(str, 1)
-		},
-		FormatLevel: consoleDefaultFormatLevel(),
-		FormatTimestamp: func(i any) string {
-			str, ok := i.(string)
-			if !ok {
-				return ""
-			}
-
-			parse, err := time.Parse(time.RFC3339, str)
-			if err != nil {
-				return ""
-			}
-
-			return Colorize(parse.Format("15:04:05"), 7)
-		},
-	}).Level(level)
-}
-
-func consoleDefaultFormatLevel() zerolog.Formatter {
-	return func(i any) string {
-		var l string
-
-		if ll, ok := i.(string); ok {
-			switch ll {
-			case zerolog.LevelTraceValue:
-				l = Colorize("TRC", 10)
-			case zerolog.LevelDebugValue:
-				l = Colorize("DBG", 10)
-			case zerolog.LevelInfoValue:
-				l = Colorize("INF", 10)
-			case zerolog.LevelWarnValue:
-				l = Colorize("WRN", 11)
-			case zerolog.LevelErrorValue:
-				l = Colorize("ERR", 9)
-			case zerolog.LevelFatalValue:
-				l = Colorize("FTL", 9)
-			case zerolog.LevelPanicValue:
-				l = Colorize("PNC", 9)
-			default:
-				l = Colorize(ll, 11)
-			}
+	for _, a := range h.attrs {
+		if a.Key == "error" {
+			errStr = Colorize(a.Value.String(), 1)
 		} else {
-			if i == nil {
-				l = Colorize("???", 11)
-			} else {
-				l = Colorize(strings.ToUpper(fmt.Sprintf("%s", i))[:3], 11)
-			}
+			fields = append(fields, Colorize(a.Key+"=", 6)+Colorize(a.Value.String(), 6))
+		}
+	}
+
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == "error" {
+			errStr = Colorize(a.Value.String(), 1)
+		} else {
+			fields = append(fields, Colorize(a.Key+"=", 6)+Colorize(a.Value.String(), 6))
 		}
 
-		return l
+		return true
+	})
+
+	parts := []string{ts, lvl, msg}
+
+	if errStr != "" {
+		parts = append(parts, errStr)
+	}
+
+	parts = append(parts, fields...)
+
+	_, err := fmt.Fprintf(h.out, "%s\n", strings.Join(parts, " "))
+
+	return err
+}
+
+func (h *colorHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &colorHandler{
+		out:   h.out,
+		level: h.level,
+		attrs: append(h.attrs, attrs...),
 	}
 }
 
-func Colorize(s string, c int) string {
-	return fmt.Sprintf("\033[38;5;%dm%s\033[0m", c, s)
+func (h *colorHandler) WithGroup(_ string) slog.Handler {
+	return h
+}
+
+func formatLevel(l slog.Level) string {
+	switch {
+	case l >= slog.LevelError:
+		return Colorize("ERR", 9)
+	case l >= slog.LevelWarn:
+		return Colorize("WRN", 11)
+	case l >= slog.LevelInfo:
+		return Colorize("INF", 10)
+	default:
+		return Colorize("DBG", 10)
+	}
 }

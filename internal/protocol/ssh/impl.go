@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"strconv"
 	"strings"
@@ -47,7 +48,7 @@ func New(cfg *Config) (*Protocol, error) {
 		Timeout:         time.Second * 5,
 	}
 
-	log.Debug().Str("url", fmt.Sprintf("%s@%s", sshConfig.User, cfg.Host)).Msg("SSH", "open connection")
+	slog.Debug("open connection", "url", fmt.Sprintf("%s@%s", sshConfig.User, cfg.Host))
 
 	cli, err := ssh.Dial("tcp", cfg.Host+":22", sshConfig)
 	if err != nil {
@@ -59,7 +60,7 @@ func New(cfg *Config) (*Protocol, error) {
 	if len(cfg.DNS) != 0 {
 		dnsList = cfg.DNS
 	} else {
-		log.Debug().Str("url", fmt.Sprintf("%s@%s", sshConfig.User, cfg.Host)).Msg("SSH", "get dns servers")
+		slog.Debug("get dns servers", "url", fmt.Sprintf("%s@%s", sshConfig.User, cfg.Host))
 
 		session, err := cli.NewSession()
 		if err != nil {
@@ -90,7 +91,7 @@ func New(cfg *Config) (*Protocol, error) {
 
 func (p *Protocol) dial(n, addr string) (net.Conn, error) {
 	for i := 0; ; i++ {
-		log.Debug().Str("attempt", strconv.Itoa(i)).Str("dest", addr).Str("type", n).Msg("SSH", "open dial")
+		slog.Debug("open dial", "attempt", strconv.Itoa(i), "dest", addr, "type", n)
 
 		conn, err := p.cli.Dial(n, addr)
 		if err == nil || i == 2 {
@@ -101,7 +102,7 @@ func (p *Protocol) dial(n, addr string) (net.Conn, error) {
 			return nil, err
 		}
 
-		log.Warn().Str("dest", addr).Str("type", n).Str("url", fmt.Sprintf("%s@%s", p.config.User, p.host)).Err(err).Msg("SSH", "reopen connection")
+		slog.Warn("reopen connection", "dest", addr, "type", n, "url", fmt.Sprintf("%s@%s", p.config.User, p.host), "error", err)
 
 		if !p.mx.TryLock() {
 			time.Sleep(1 * time.Second)
@@ -111,7 +112,7 @@ func (p *Protocol) dial(n, addr string) (net.Conn, error) {
 
 		cli, err := ssh.Dial("tcp", p.host+":22", p.config)
 		if err != nil {
-			log.Error().Err(err).Msg("SSH", "failed to open ssh session")
+			slog.Error("failed to open ssh session", "error", err)
 
 			p.mx.Unlock()
 
@@ -139,7 +140,7 @@ func (p *Protocol) LookupHost(_ context.Context, req *dns.Msg) *dns.Msg {
 	for _, addr := range p.dns {
 		dnsConn, err := p.dial("tcp", addr+":53")
 		if err != nil {
-			log.Error().Str("server", addr).DNS(req).Err(err).Msg("SSH", "handle dns req")
+			slog.Error("handle dns req", append([]any{"server", addr, "error", err}, log.DNSAttrs(req)...)...)
 
 			continue
 		}
@@ -149,19 +150,19 @@ func (p *Protocol) LookupHost(_ context.Context, req *dns.Msg) *dns.Msg {
 
 		err = co.WriteMsg(req)
 		if err != nil {
-			log.Error().Str("server", addr).DNS(req).Err(err).Msg("SSH", "write dns req")
+			slog.Error("write dns req", append([]any{"server", addr, "error", err}, log.DNSAttrs(req)...)...)
 
 			continue
 		}
 
 		rsp, err := co.ReadMsg()
 		if err != nil {
-			log.Error().Str("server", addr).DNS(req).Err(err).Msg("SSH", "read dns req")
+			slog.Error("read dns req", append([]any{"server", addr, "error", err}, log.DNSAttrs(req)...)...)
 
 			continue
 		}
 
-		log.Debug().Str("server", addr).DNS(req).Msg("SSH", "handle dns req")
+		slog.Debug("handle dns req", append([]any{"server", addr}, log.DNSAttrs(req)...)...)
 
 		if len(rsp.Answer) == 0 {
 			continue
@@ -177,13 +178,13 @@ func (p *Protocol) HandleTCP(conn net.Conn) {
 	remoteConn, err := p.dial(conn.LocalAddr().Network(), conn.LocalAddr().String())
 	if err != nil {
 		if !errors.Is(err, io.EOF) {
-			log.Warn().Str("dest", conn.LocalAddr().String()).Str("type", conn.LocalAddr().Network()).Err(err).Msg("SSH", "handle conn")
+			slog.Warn("handle conn", "dest", conn.LocalAddr().String(), "type", conn.LocalAddr().Network(), "error", err)
 		}
 
 		return
 	}
 
-	log.Info().Str("dest", conn.LocalAddr().String()).Str("type", conn.LocalAddr().Network()).Msg("SSH", "handle conn")
+	slog.Info("handle conn", "dest", conn.LocalAddr().String(), "type", conn.LocalAddr().Network())
 
-	network.Transfer("SSH", conn, remoteConn)
+	network.Transfer(conn, remoteConn)
 }
