@@ -23,11 +23,24 @@ var resolv *resolvHandler
 
 func init() {
 	r, err := newResolvHandler()
+	if err == nil {
+		resolv = r
+	}
+}
+
+func ensureResolv() error {
+	if resolv != nil {
+		return nil
+	}
+
+	r, err := newResolvHandler()
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	resolv = r
+
+	return nil
 }
 
 func newResolvHandler() (*resolvHandler, error) {
@@ -126,13 +139,25 @@ func (r *resolvHandler) RestoreDNS() error {
 }
 
 func LSetDNS(dns []string) error {
+	if err := ensureResolv(); err != nil {
+		return err
+	}
+
 	return resolv.SetDNS(dns)
 }
 
 func LGetOriginalDNS() []string {
+	if err := ensureResolv(); err != nil {
+		return nil
+	}
+
 	return resolv.GetOriginalDNS()
 }
 
 func LRestoreDNS() error {
+	if err := ensureResolv(); err != nil {
+		return err
+	}
+
 	return resolv.RestoreDNS()
 }
